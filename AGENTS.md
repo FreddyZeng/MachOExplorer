@@ -5,7 +5,7 @@ This guide describes how autonomous contributors should work in this repository 
 ## Project Snapshot
 - App: `MachOExplorer` (Qt/C++)
 - Domain: Mach-O / Fat Mach-O / `.a` archive / dyld shared cache analysis
-- Current release line: `v2.0.x` (repo currently at `v2.0.1`)
+- Current release line: `v2.0.x` (repo currently at `v2.0.16`)
 - Platforms: macOS first-class, Windows supported
 
 ## Repository Layout
