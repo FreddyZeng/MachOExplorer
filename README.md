@@ -1,5 +1,7 @@
 # MachOExplorer
 
+Repository: <https://github.com/everettjf/machoexplorer>
+
 > A focused desktop explorer for Mach-O binaries, Fat/Universal binaries, `.a` archives, and the dyld shared cache — built for people who reverse engineer and inspect Apple binaries.
 
 Language: **English** | [简体中文](README.zh-CN.md)
