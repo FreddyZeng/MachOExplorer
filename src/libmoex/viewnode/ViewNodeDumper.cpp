@@ -11,6 +11,11 @@ namespace {
 
 using Json = nlohmann::json;
 
+// Hard cap on view-tree recursion depth. A real Mach-O view tree is only a
+// handful of levels deep; this guards against stack overflow if malformed input
+// ever yields a pathologically deep or cyclic node tree.
+static const size_t kMaxDumpDepth = 256;
+
 static std::vector<ViewNode *> CollectChildren(ViewNode *node) {
     std::vector<ViewNode *> children;
     node->ForEachChild([&](ViewNode *child) {
@@ -53,6 +58,47 @@ static std::string SanitizeCell(const std::string &input) {
         } else {
             out += c;
         }
+    }
+    return out;
+}
+
+// Returns a valid UTF-8 copy of the input, replacing any malformed byte with
+// '?'. Cell values can hold raw bytes from malformed/truncated binaries, and
+// the bundled nlohmann::json (3.1.2) throws on invalid UTF-8 during dump().
+static std::string ToUtf8Safe(const std::string &in) {
+    std::string out;
+    out.reserve(in.size());
+    const std::size_t n = in.size();
+    std::size_t i = 0;
+    while (i < n) {
+        const unsigned char c = static_cast<unsigned char>(in[i]);
+        if (c < 0x80) {
+            out += static_cast<char>(c);
+            ++i;
+            continue;
+        }
+        std::size_t len;
+        uint32_t min_cp;
+        if ((c & 0xE0) == 0xC0) { len = 2; min_cp = 0x80; }
+        else if ((c & 0xF0) == 0xE0) { len = 3; min_cp = 0x800; }
+        else if ((c & 0xF8) == 0xF0) { len = 4; min_cp = 0x10000; }
+        else { out += '?'; ++i; continue; }
+
+        if (i + len > n) { out += '?'; ++i; continue; }
+        uint32_t cp = c & (0x7Fu >> len);
+        bool ok = true;
+        for (std::size_t k = 1; k < len; ++k) {
+            const unsigned char cc = static_cast<unsigned char>(in[i + k]);
+            if ((cc & 0xC0) != 0x80) { ok = false; break; }
+            cp = (cp << 6) | (cc & 0x3Fu);
+        }
+        if (!ok || cp < min_cp || cp > 0x10FFFFu || (cp >= 0xD800u && cp <= 0xDFFFu)) {
+            out += '?';
+            ++i;
+            continue;
+        }
+        out.append(in, i, len);
+        i += len;
     }
     return out;
 }
@@ -172,7 +218,7 @@ static Json TableToJson(const TableViewDataPtr &table, const ViewNodeDumpOptions
     if (IncludeTableHeaders(options)) {
         j["headers"] = Json::array();
         for (const auto &header : table->headers) {
-            j["headers"].push_back(header->data);
+            j["headers"].push_back(ToUtf8Safe(header->data));
         }
     }
 
@@ -194,13 +240,13 @@ static Json TableToJson(const TableViewDataPtr &table, const ViewNodeDumpOptions
         r["values"] = Json::array();
         r["cells"] = Json::object();
         for (const auto &item : row->items) {
-            r["values"].push_back(item->data);
+            r["values"].push_back(ToUtf8Safe(item->data));
         }
         for (size_t col = 0; col < row->items.size(); ++col) {
             const std::string key = col < table->headers.size()
-                    ? table->headers[col]->data
+                    ? ToUtf8Safe(table->headers[col]->data)
                     : ("column" + std::to_string(col));
-            r["cells"][key] = row->items[col]->data;
+            r["cells"][key] = ToUtf8Safe(row->items[col]->data);
         }
         if (row->size > 0) {
             r["byteLength"] = row->size;
@@ -237,6 +283,9 @@ static void DumpNodeText(ViewNode *node,
     if (options.max_depth > 0 && depth >= options.max_depth) {
         return;
     }
+    if (depth >= kMaxDumpDepth) {
+        return;
+    }
 
     auto children = CollectChildren(node);
     for (auto *child : children) {
@@ -251,9 +300,9 @@ static Json NodeToJson(ViewNode *node,
                        size_t child_index = 0) {
     node->Init();
     Json j;
-    j["name"] = node->GetDisplayName();
+    j["name"] = ToUtf8Safe(node->GetDisplayName());
     j["depth"] = depth;
-    j["path"] = JoinPath(path_segments);
+    j["path"] = ToUtf8Safe(JoinPath(path_segments));
     j["kind"] = ClassifyNodeKind(node);
     j["childIndex"] = child_index;
 
@@ -271,7 +320,7 @@ static Json NodeToJson(ViewNode *node,
     }
 
     j["children"] = Json::array();
-    if (options.max_depth == 0 || depth < options.max_depth) {
+    if ((options.max_depth == 0 || depth < options.max_depth) && depth < kMaxDumpDepth) {
         auto children = CollectChildren(node);
         for (size_t i = 0; i < children.size(); ++i) {
             auto *child = children[i];
@@ -317,6 +366,9 @@ static void AccumulateSummary(ViewNode *node,
     }
 
     if (options.max_depth > 0 && depth >= options.max_depth) {
+        return;
+    }
+    if (depth >= kMaxDumpDepth) {
         return;
     }
 
